@@ -1,2 +1,2 @@
-./data/15-Scene/*
-./catboost_info
+data/15-Scene/**
+catboost_info/**
