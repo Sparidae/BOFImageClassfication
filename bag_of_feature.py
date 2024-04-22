@@ -65,11 +65,6 @@ class BagOfVisualWords:
         # 定义不需要重复的步骤
         # 读取数据
         self.read_15scene()
-        # 提取sift特征 获得描述子，关键点和图像形状数组
-        self.des_train, self.kp_train, self.shp_train = self.sift_extract(
-            self.imgs_train
-        )
-        self.des_test, self.kp_test, self.shp_test = self.sift_extract(self.imgs_test)
         pass
 
     @cal_time_cost
@@ -99,7 +94,13 @@ class BagOfVisualWords:
 
     @cal_time_cost
     # @profile
-    def sift_extract(self, imgs):
+    def sift_extract(
+        self,
+        imgs,
+        nOctaveLayers=3,
+        contrastThreshold=0.04,
+        edgeThreshold=10,
+    ):
         """
         提取图像的sift特征 返回所有特征点的sift特征向量
         imgs 是图像列表
@@ -108,12 +109,12 @@ class BagOfVisualWords:
         sift_des = []  # sift描述子
         kp_list = []  # 特征点列表
         shape_list = []  # 图像形状列表
-        for i in tqdm(range(len(imgs)), desc="sift_extract"):
+        for i in range(len(imgs)):
             sift = cv2.SIFT_create(
                 nfeatures=0,  # 要保留的最佳特征的数量 0
-                nOctaveLayers=3,  #
-                contrastThreshold=0.04,  # 对比度滤除阈值，阈值越大，检测器产生的特征越少 0.04
-                edgeThreshold=10,  # 用于过滤掉类似边缘的特征的阈值。边缘阈值越大，过滤掉的特征越少（保留的特征越多）10
+                nOctaveLayers=nOctaveLayers,  #
+                contrastThreshold=contrastThreshold,  # 对比度滤除阈值，阈值越大，检测器产生的特征越少 0.04
+                edgeThreshold=edgeThreshold,  # 用于过滤掉类似边缘的特征的阈值。边缘阈值越大，过滤掉的特征越少（保留的特征越多）10
             )
             kp, des = sift.detectAndCompute(imgs[i], None)
             kp_list.append(kp)  # keypoint对象列表 通过每个元素的pt属性求坐标
@@ -206,7 +207,7 @@ class BagOfVisualWords:
         # https://scikit-learn.org/stable/modules/svm.html#multi-class-classification
         # https://scikit-learn.org/stable/modules/generated/sklearn.svm.SVC.html#sklearn.svm.SVC
         svc = sklearn.svm.SVC(
-            kernel=kernel,
+            kernel="rbf",
             C=C,
             decision_function_shape="ovr",
         )
@@ -238,9 +239,27 @@ class BagOfVisualWords:
 
     # @profile
     def pipeline(
-        self, vocab_size=2000, C=100, kernel="rbf", cm_label="precision", plt_cm=True
+        self,
+        nOctaveLayers=5,
+        contrastThreshold=0.04,
+        vocab_size=1000,
+        C=100,
+        kernel="rbf",
+        cm_label="precision",
+        plt_cm=True,
     ):
         # 写入整体训练重复流程，用于优化参数
+        # 提取sift特征 获得描述子，关键点和图像形状数组
+        self.des_train, self.kp_train, self.shp_train = self.sift_extract(
+            self.imgs_train,
+            nOctaveLayers=nOctaveLayers,
+            contrastThreshold=contrastThreshold,
+        )
+        self.des_test, self.kp_test, self.shp_test = self.sift_extract(
+            self.imgs_test,
+            nOctaveLayers=nOctaveLayers,
+            contrastThreshold=contrastThreshold,
+        )
         # 计算视觉词典
         self.classfier = None
         self.rep_train = None
@@ -291,17 +310,17 @@ class BagOfVisualWords:
         assert metric in ["precision", "recall", "f1", "accuracy"]
 
         space = {
+            "nOctaveLayers": hp.randint("nOctaveLayers", 2, 8),
+            "contrastThreshold": hp.uniform("contrastThreshold", 0.02, 0.04),
             "vocab_size": hp.randint("vocab_size", 90, 1000),
             "C": hp.uniform("C", 0, 20),
-            "kernel": hp.choice("kernel", ["sigmoid", "rbf"]),
+            # "kernel": hp.choice("kernel", ["sigmoid", "rbf"]), # 均为rbf最优
         }
 
         @blockstdout
         def obj(params):
             m = self.pipeline(
-                params["vocab_size"],
-                params["C"],
-                params["kernel"],
+                **params,
                 cm_label=metric,
                 plt_cm=False,
             )
@@ -311,117 +330,20 @@ class BagOfVisualWords:
             fn=obj,
             space=space,
             algo=tpe.suggest,
-            max_evals=100,
+            max_evals=200,
         )
         print(best)
 
     # =============================================================================
 
-    @cal_time_cost
-    def train_catboost(
-        self,
-        iterations=100,
-        lr=0.01,
-        depth=6,
-        l2_leaf_reg=3,
-    ):
-        m = CatBoostClassifier(
-            iterations=iterations,
-            learning_rate=lr,
-            depth=depth,
-            l2_leaf_reg=l2_leaf_reg,
-            task_type="CPU",
-            # early_stopping_rounds=5,
-            logging_level="Silent",
-        )
-        train_pool = Pool(self.rep_train, label=self.label_train)
-        m.fit(train_pool)
-        return m
-
-    def gbdt_pipeline(
-        self,
-        vocab_size=2000,
-        iterations=100,
-        lr=0.01,
-        depth=6,
-        l2_leaf_reg=3,
-        cm_label="precision",
-        plt_cm=True,
-    ):
-        # 写入整体训练重复流程，用于优化参数
-        # 计算视觉词典
-        self.classfier = None
-        self.rep_train = None
-        self.rep_test = None
-        sift_all = np.concatenate(self.des_train + self.des_test, axis=0)
-        self.kmeans = self.get_visual_vocab(sifts=sift_all, vocab_size=vocab_size)
-        del sift_all
-        # 计算图像表示
-        self.rep_train = self.get_img_representation(
-            self.des_train, self.kp_train, self.shp_train, vocab_size=vocab_size
-        )
-        self.rep_test = self.get_img_representation(
-            self.des_test, self.kp_test, self.shp_test, vocab_size=vocab_size
-        )
-        self.classfier = self.train_catboost(
-            iterations=iterations,
-            lr=lr,
-            depth=depth,
-            l2_leaf_reg=l2_leaf_reg,
-        )
-        self.rep_test = Pool(self.rep_test, self.label_test)
-        self.pred_test, self.metrics = self.evaluate()
-        if plt_cm:
-            self.plt_confusion_matrix(text=f"{cm_label}_CatBoost")  # 混淆矩阵
-        # 释放内存
-        del self.kmeans, self.classfier, self.rep_train, self.rep_test
-        gc.collect()
-        return self.metrics  # precison,recall,f1,accuracy
-
-    def gbdt_optimize(self, metric="precision"):
-        assert metric in ["precision", "recall", "f1", "accuracy"]
-
-        space = {
-            "vocab_size": hp.randint("vocab_size", 200, 600),
-            "lr": hp.uniform("lr", 0.005, 0.2),
-            "depth": hp.randint("depth", 2, 10),
-            "l2_leaf_reg": hp.randint("l2_leaf_reg", 2, 12),
-            # "kernel": hp.choice("kernel", ["sigmoid", "rbf"]),
-        }
-
-        @blockstdout
-        def obj(params):
-            m = self.gbdt_pipeline(
-                vocab_size=params["vocab_size"],
-                lr=params["lr"],
-                depth=params["depth"],
-                l2_leaf_reg=params["l2_leaf_reg"],
-                cm_label=metric,
-                plt_cm=False,
-            )
-            return -m[metric]
-
-        best = fmin(
-            fn=obj,
-            space=space,
-            algo=tpe.suggest,
-            max_evals=150,
-        )
-        print(best)
-
 
 if __name__ == "__main__":
     model = BagOfVisualWords()
-    model.optimize("f1")  # precision,recall,f1,accuracy
+    # model.optimize("precision")  # precision,recall,f1,accuracy
 
-    # model.pipeline(vocab_size=344, C=12.2, kernel="rbf")  # precision最佳
-    # model.pipeline(
-    #     vocab_size=513, C=11.2, kernel="rbf", cm_label="accuracy"
-    # )  # accuracy最佳
-    # for i in range(50):
-    #     model.pipeline()
-
-    # model.gbdt_pipeline()
-    # model.gbdt_optimize("precision")
-
-    pass
+    model.pipeline(
+        vocab_size=317,
+        C=8.46,
+        contrastThreshold=0.0244,
+        nOctaveLayers=6,
+    )  # precision最佳
