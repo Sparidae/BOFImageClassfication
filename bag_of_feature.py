@@ -10,13 +10,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Intel sklearn优化，非intel需要关闭此选项,同时循环运行可能会导致一定的内存泄漏，优化模型参数的时候需要关闭
+# from sklearnex import patch_sklearn
 # patch_sklearn()
 import sklearn.cluster
 import sklearn.metrics
 import sklearn.svm
 from catboost import CatBoostClassifier, Pool
 from hyperopt import fmin, hp, tpe
-from sklearnex import patch_sklearn
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
@@ -152,7 +152,9 @@ class BagOfVisualWords:
         sift_label 图像sift标签
         """
         # kms 计算特征描述子所属的类别，计数类别并归一化
-        img_representation = np.zeros((len(sift_des), 21 * vocab_size))  # 图像表示矩阵
+        spatial_level = 0
+        img_representation = np.zeros((len(sift_des), 5 * vocab_size))  # 图像表示矩阵
+
         for img_id in range(len(sift_des)):
             assert len(sift_des[img_id]), len(kp_list[img_id])
             # 针对每个图像 计算图像描述向量
@@ -181,9 +183,11 @@ class BagOfVisualWords:
                     print(kpts[i][0], kpts[i][1])
                     exit()
 
-            l1 = np.zeros((4, vocab_size))
+            l1 = np.zeros((4, vocab_size))  # 不同的空间金字塔
             for grim_id, i in enumerate([0, 2, 8, 10]):
                 l1[grim_id] = l2[i] + l2[i + 1] + l2[i + 4] + l2[i + 5]
+            # for i in range(0, 3):
+            #     l1[i] = l2[i * 4] + l2[i * 4 + 1] + l2[i * 4 + 2] + l2[i * 4 + 3]
 
             l0 = np.zeros((1, vocab_size))
             l0[0] += np.sum(l1, axis=0)
@@ -192,8 +196,11 @@ class BagOfVisualWords:
             # 权重 https://www.cnblogs.com/lxjshuju/p/7300861.html 1/2^(L-l)
             l1 = l1 / 2
             l0 = l0 / 4
+            # 不同的空间金字塔层数
             img_representation[img_id] = np.concatenate(
-                [l0.flatten(), l1.flatten(), l2.flatten()]
+                # [l0.flatten(), l1.flatten(), l2.flatten()]
+                [l0.flatten(), l1.flatten()]
+                # [l0.flatten()]
             )
 
         # img_label = np.array(sift_label)
@@ -237,7 +244,6 @@ class BagOfVisualWords:
         print(metrics)
         return pred, metrics
 
-    # @profile
     def pipeline(
         self,
         nOctaveLayers=5,
@@ -245,11 +251,13 @@ class BagOfVisualWords:
         vocab_size=1000,
         C=100,
         kernel="rbf",
-        cm_label="precision",
+        spm_label="1",  # 0,1,1a (不同的第二层组织形式),1+(第一层不同形式组织两次),2,
+        metric_label="precision",
         plt_cm=True,
     ):
         # 写入整体训练重复流程，用于优化参数
         # 提取sift特征 获得描述子，关键点和图像形状数组
+
         self.des_train, self.kp_train, self.shp_train = self.sift_extract(
             self.imgs_train,
             nOctaveLayers=nOctaveLayers,
@@ -278,7 +286,9 @@ class BagOfVisualWords:
         self.pred_test, self.metrics = self.evaluate()
         if plt_cm:
             self.plt_confusion_matrix(
-                text=f"{cm_label}_{vocab_size}_{C}_{kernel}"
+                text=f"spm{spm_label}-"
+                + f"{metric_label}{self.metrics[metric_label]:.3f}-"
+                + f"{nOctaveLayers}_{contrastThreshold}_{vocab_size}_{C}"
             )  # 混淆矩阵
         # 释放内存
         del self.kmeans, self.classfier, self.rep_train, self.rep_test
@@ -290,7 +300,7 @@ class BagOfVisualWords:
         # cfmx = sklearn.metrics.confusion_matrix(
         #     self.label_test, self.test_pred, normalize="true"
         # )
-        plt.rcParams.update({"font.size": 6})
+        plt.rcParams.update({"font.size": 5})
         sklearn.metrics.ConfusionMatrixDisplay.from_predictions(
             self.label_test,
             self.pred_test,
@@ -300,9 +310,7 @@ class BagOfVisualWords:
         # plt.text()
 
         plt.show()
-        plt.savefig(
-            os.path.join(self.save_dir, f"confusion_matrix_{text}.png"), dpi=300
-        )
+        plt.savefig(os.path.join(self.save_dir, f"cm_{text}.png"), dpi=300)
         pass
 
     # @profile
@@ -321,7 +329,7 @@ class BagOfVisualWords:
         def obj(params):
             m = self.pipeline(
                 **params,
-                cm_label=metric,
+                metric_label=metric,
                 plt_cm=False,
             )
             return -m[metric]
@@ -341,9 +349,16 @@ if __name__ == "__main__":
     model = BagOfVisualWords()
     # model.optimize("precision")  # precision,recall,f1,accuracy
 
+    # model.pipeline(
+    #     vocab_size=317,
+    #     C=8.46,
+    #     contrastThreshold=0.0244,
+    #     nOctaveLayers=6,
+    # )  # precision最佳 三层SPM
+
     model.pipeline(
-        vocab_size=317,
-        C=8.46,
-        contrastThreshold=0.0244,
+        vocab_size=746,
+        C=16.63,
+        contrastThreshold=0.0269,
         nOctaveLayers=6,
-    )  # precision最佳
+    )  # precision最佳 双层SPM
