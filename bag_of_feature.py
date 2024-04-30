@@ -10,8 +10,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Intel sklearn优化，非intel需要关闭此选项,同时循环运行可能会导致一定的内存泄漏，优化模型参数的时候需要关闭
-# from sklearnex import patch_sklearn
-# patch_sklearn()
+from sklearnex import patch_sklearn
+
+patch_sklearn()
 import sklearn.cluster
 import sklearn.metrics
 import sklearn.svm
@@ -111,7 +112,7 @@ class BagOfVisualWords:
         shape_list = []  # 图像形状列表
         for i in range(len(imgs)):
             sift = cv2.SIFT_create(
-                nfeatures=0,  # 要保留的最佳特征的数量 0
+                nfeatures=0,  # 要保留的最佳特征的数量 0代表不过滤
                 nOctaveLayers=nOctaveLayers,  #
                 contrastThreshold=contrastThreshold,  # 对比度滤除阈值，阈值越大，检测器产生的特征越少 0.04
                 edgeThreshold=edgeThreshold,  # 用于过滤掉类似边缘的特征的阈值。边缘阈值越大，过滤掉的特征越少（保留的特征越多）10
@@ -153,7 +154,7 @@ class BagOfVisualWords:
         """
         # kms 计算特征描述子所属的类别，计数类别并归一化
         spatial_level = 0
-        img_representation = np.zeros((len(sift_des), 5 * vocab_size))  # 图像表示矩阵
+        img_representation = np.zeros((len(sift_des), 21 * vocab_size))  # 图像表示矩阵
 
         for img_id in range(len(sift_des)):
             assert len(sift_des[img_id]), len(kp_list[img_id])
@@ -172,6 +173,8 @@ class BagOfVisualWords:
                 )  # 列是反的 https://blog.csdn.net/luoyang7891/article/details/106472505
             ]  # 属于哪个词
             cat_ids = self.kmeans.predict(sift_des[img_id])  # 预测属于哪个词袋
+
+            # 计算4*4 层次的表示
             for i in range(len(kpts)):
                 try:
                     l2[grim_ids[i], cat_ids[i]] += 1
@@ -183,12 +186,14 @@ class BagOfVisualWords:
                     print(kpts[i][0], kpts[i][1])
                     exit()
 
+            # 计算2*2的分割层次的表示
             l1 = np.zeros((4, vocab_size))  # 不同的空间金字塔
             for grim_id, i in enumerate([0, 2, 8, 10]):
                 l1[grim_id] = l2[i] + l2[i + 1] + l2[i + 4] + l2[i + 5]
             # for i in range(0, 3):
             #     l1[i] = l2[i * 4] + l2[i * 4 + 1] + l2[i * 4 + 2] + l2[i * 4 + 3]
 
+            # 计算原始图像层次的表示
             l0 = np.zeros((1, vocab_size))
             l0[0] += np.sum(l1, axis=0)
 
@@ -198,9 +203,9 @@ class BagOfVisualWords:
             l0 = l0 / 4
             # 不同的空间金字塔层数
             img_representation[img_id] = np.concatenate(
-                # [l0.flatten(), l1.flatten(), l2.flatten()]
-                [l0.flatten(), l1.flatten()]
-                # [l0.flatten()]
+                [l0.flatten(), l1.flatten(), l2.flatten()]  # 21
+                # [l0.flatten(), l1.flatten()] # 5
+                # [l0.flatten()] # 1
             )
 
         # img_label = np.array(sift_label)
@@ -349,16 +354,9 @@ if __name__ == "__main__":
     model = BagOfVisualWords()
     # model.optimize("precision")  # precision,recall,f1,accuracy
 
-    # model.pipeline(
-    #     vocab_size=317,
-    #     C=8.46,
-    #     contrastThreshold=0.0244,
-    #     nOctaveLayers=6,
-    # )  # precision最佳 三层SPM
-
     model.pipeline(
-        vocab_size=746,
-        C=16.63,
-        contrastThreshold=0.0269,
+        vocab_size=317,
+        C=8.46,
+        contrastThreshold=0.0244,
         nOctaveLayers=6,
-    )  # precision最佳 双层SPM
+    )  # precision最佳 三层SPM
